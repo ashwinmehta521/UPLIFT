@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExternalClientApplication xmlns="http://soap.sforce.com/2006/04/metadata">
+    <contactEmail>ashwinmehta521@gmail.com</contactEmail>
+    <distributionState>Local</distributionState>
+    <isProtected>false</isProtected>
+    <label>retrieve data</label>
+    <orgScopedExternalApp>00Dfj00000RJcWg:retrieve_data</orgScopedExternalApp>
+</ExternalClientApplication>
