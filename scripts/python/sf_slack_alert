@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""
+Salesforce -> Slack Case Alert Bot (Client Credentials Flow)
+
+Authenticates to Salesforce via OAuth 2.0 Client Credentials flow
+(Connected App), checks for high-priority open Cases, and posts an
+alert to Slack via incoming webhook for each one.
+
+Setup in Salesforce (one-time):
+1. Setup -> App Manager -> New Connected App
+2. Enable OAuth Settings -> check "Enable Client Credentials Flow"
+3. Callback URL: https://login.salesforce.com/services/oauth2/callback (required, unused)
+4. OAuth Scopes: add "Manage user data via APIs (api)"
+5. Save, wait ~10 min to propagate
+6. Connected App -> Manage -> Edit Policies:
+   - Permitted Users: "Admin approved users are pre-authorized"
+   - Client Credentials Flow -> Run As: pick an admin/integration user
+7. Grab Consumer Key + Consumer Secret from the app's settings page
+
+Setup locally:
+1. pip install requests --break-system-packages
+   (simple-salesforce not needed - we use requests directly for both
+   the OAuth token exchange and the SOQL query)
+2. Fill in SF_DOMAIN, CONSUMER_KEY, CONSUMER_SECRET, SLACK_WEBHOOK_URL below
+3. Run: python sf_slack_bot.py
+"""
+
+from datetime import datetime
+import os
+import requests
+
+# ---- Configuration ----
+# Set these as environment variables before running the script:
+# export SF_DOMAIN="https://your-domain.my.salesforce.com"
+# export SF_CONSUMER_KEY="your-consumer-key"
+# export SF_CONSUMER_SECRET="your-consumer-secret"
+# export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/xxx"
+SF_DOMAIN = os.getenv("SF_DOMAIN", "https://your-domain.my.salesforce.com")
+CONSUMER_KEY = os.getenv("SF_CONSUMER_KEY", "")
+CONSUMER_SECRET = os.getenv("SF_CONSUMER_SECRET", "")
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
+# ------------------------
+
+API_VERSION = "v60.0"
+
+
+def require_config():
+    missing = []
+    if not CONSUMER_KEY:
+        missing.append("SF_CONSUMER_KEY")
+    if not CONSUMER_SECRET:
+        missing.append("SF_CONSUMER_SECRET")
+    if not SLACK_WEBHOOK_URL:
+        missing.append("SLACK_WEBHOOK_URL")
+    if not SF_DOMAIN or SF_DOMAIN == "https://your-domain.my.salesforce.com":
+        missing.append("SF_DOMAIN")
+
+    if missing:
+        raise RuntimeError(
+            "Missing required configuration: " + ", ".join(missing) + "\n"
+            "Set them as environment variables before running the script."
+        )
+
+
+def get_access_token():
+    """
+    OAuth 2.0 Client Credentials flow.
+    Returns (access_token, instance_url).
+    """
+    require_config()
+    token_url = f"{SF_DOMAIN}/services/oauth2/token"
+    response = requests.post(
+        token_url,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": CONSUMER_KEY,
+            "client_secret": CONSUMER_SECRET,
+        },
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"Auth failed: {response.status_code} {response.text}")
+
+    data = response.json()
+    return data["access_token"], data["instance_url"]
+
+
+def get_high_priority_cases(access_token, instance_url):
+    """
+    Query open Cases that are High priority via REST API.
+    Adjust the SOQL WHERE clause to fit what counts as 'needs an alert' for you.
+    """
+    query = (
+        "SELECT Id, CaseNumber, Subject, Description, Priority, Status, Origin, CreatedDate "
+        "FROM Case "
+        "WHERE Status != 'Closed' "
+        "AND Priority = 'High' "
+        "ORDER BY CreatedDate DESC"
+    )
+    url = f"{instance_url}/services/data/{API_VERSION}/query"
+    response = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {access_token}"},
+        params={"q": query},
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"Query failed: {response.status_code} {response.text}")
+
+    return response.json()["records"]
+
+
+def format_slack_message(case, instance_url):
+    """Build a nicely formatted Slack message block for a case."""
+    case_url = f"{instance_url}/lightning/r/Case/{case['Id']}/view"
+    description = case.get("Description") or "(no description provided)"
+    if len(description) > 300:
+        description = description[:300] + "..."
+
+    return {
+        "blocks": [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"🚨 New High Priority Case: {case['CaseNumber']}"
+                }
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Subject:*\n{case['Subject']}"},
+                    {"type": "mrkdwn", "text": f"*Status:*\n{case['Status']}"},
+                    {"type": "mrkdwn", "text": f"*Origin:*\n{case.get('Origin', 'N/A')}"},
+                    {"type": "mrkdwn", "text": f"*Created:*\n{case['CreatedDate']}"}
+                ]
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Description:*\n{description}"}
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"<{case_url}|View Case in Salesforce>"}
+            },
+            {"type": "divider"}
+        ]
+    }
+
+
+def post_to_slack(message):
+    response = requests.post(SLACK_WEBHOOK_URL, json=message)
+    if response.status_code != 200:
+        print(f"  ! Slack post failed: {response.status_code} {response.text}")
+    return response.status_code == 200
+
+
+def run(access_token, instance_url):
+    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Checking Salesforce for high-priority cases...")
+    cases = get_high_priority_cases(access_token, instance_url)
+
+    if not cases:
+        print("  No high-priority cases found.")
+        return
+
+    print(f"  Found {len(cases)} high-priority case(s). Posting to Slack...")
+    for case in cases:
+        message = format_slack_message(case, instance_url)
+        success = post_to_slack(message)
+        if success:
+            print(f"  -> Alerted: {case['CaseNumber']} - {case['Subject']}")
+        else:
+            print(f"  -> Failed to alert: {case['CaseNumber']}")
+
+
+def main():
+    print("Authenticating with Salesforce (Client Credentials flow)...")
+    access_token, instance_url = get_access_token()
+    print(f"Authenticated. Instance: {instance_url}")
+    run(access_token, instance_url)
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()
