@@ -22,7 +22,7 @@ Setup locally:
    (simple-salesforce not needed - we use requests directly for both
    the OAuth token exchange and the SOQL query)
 2. Fill in SF_DOMAIN, CONSUMER_KEY, CONSUMER_SECRET, SLACK_WEBHOOK_URL below
-3. Run: python sf_slack_bot.py
+3. Run: python sf_slack_alert
 """
 
 from datetime import datetime
