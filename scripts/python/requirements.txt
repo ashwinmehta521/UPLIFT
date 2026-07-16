@@ -1,0 +1,21 @@
+# Consolidated from the per-script docstrings in scripts/python/. Each
+# script's own docstring remains the source of truth for setup steps and
+# required .env vars — this file just gathers the "pip install ..." /
+# "Requires (add to requirements.txt): ..." lines in one place so the
+# whole pipeline can be installed with one command.
+#
+#   fetch_history.py:  plotly pandas kiteconnect python-dotenv
+#   signal_engine.py:  kiteconnect python-dotenv requests
+#   telegram_bot.py:   python-telegram-bot>=21.0 python-dotenv kiteconnect requests
+#   sf_slack_alert:    requests
+#   refresh_token.py:  docstring only lists required .env vars, not pip
+#                       packages, but the script imports selenium directly —
+#                       included below since it won't run without it.
+
+kiteconnect
+python-dotenv
+requests
+plotly
+pandas
+python-telegram-bot>=21.0
+selenium
